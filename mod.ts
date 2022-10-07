@@ -19,8 +19,13 @@ async function handler(request: Request) {
     );
     authUrl.searchParams.set("scope", env.AUTH0_SCOPE);
     authUrl.searchParams.set("client_id", env.AUTH0_CLIENT_ID);
+    if (env.AUDIENCE) {
+      authUrl.searchParams.set("audience", env.AUDIENCE);
+    }
 
     return Response.redirect(authUrl);
+  } else if (url.pathname === "/logout") {
+    return Response.redirect(`https://${env.AUTH0_DOMAIN}/v2/logout?federated`);
   } else if (url.pathname === "/callback") {
     const code = url.searchParams.get("code");
     if (!code) {
@@ -52,28 +57,69 @@ async function handler(request: Request) {
       return sendResponse(html, 200);
     }
 
-    const idToken = data.id_token as string;
+    console.log(data);
 
-    const header = JSON.parse(decodeJwt(idToken.split(".")[0]));
-    const payload = JSON.parse(decodeJwt(idToken.split(".")[1]));
+    const idToken: string | undefined = data.id_token;
+    const accessToken: string | undefined = data.access_token;
 
-    const jwtUrl = `https://jwt.io#id_token=${idToken}`;
+    let html = `
+    <h1>Authentication Result</h1>
+    <h2>Token Response</h2>
+    <pre>${JSON.stringify(data, null, 2)}</pre>`;
 
-    const html = `
-    <h1>Token Response</h1>
-    <pre>${JSON.stringify(data, null, 2)}</pre>
-    <h2>Header</h2>
-    <pre>${JSON.stringify(header, null, 2)}</pre>
-    <h2>Payload</h2>
-    <pre>${JSON.stringify(payload, null, 2)}</pre>
-    <a href="${jwtUrl}" target="_blank">Inspect with jwt.io</a> | <a href="https://localhost:${port}/">Refresh</a>
-`;
+    // Get Profile
+    if (accessToken) {
+      const profile = await getProfile(accessToken);
+      html += `
+      <hr/>
+      <h2>Profile</h2>
+      <pre>${JSON.stringify(profile, null, 2)}</pre>
+      `;
+    }
+
+    if (idToken) {
+      html += getTokenHtml("ID Token", idToken);
+    }
+
+    if (accessToken && !accessToken.includes("..")) {
+      html += getTokenHtml("Access Token", accessToken);
+    }
 
     return sendResponse(html, 200);
   }
   return new Response("Not Found", {
     status: 404,
   });
+}
+
+function getTokenHtml(tokenName: string, token: string) {
+  const header = JSON.parse(decodeJwt(token.split(".")[0]));
+  const payload = JSON.parse(decodeJwt(token.split(".")[1]));
+
+  const jwtUrl = `https://jwt.io#id_token=${token}`;
+
+  return `
+<hr />
+<h2>${tokenName}</h2>
+<h3>Header</h3>
+<pre>${JSON.stringify(header, null, 2)}</pre>
+<h3>Payload</h3>
+<pre>${JSON.stringify(payload, null, 2)}</pre>
+<a href="${jwtUrl}" target="_blank">Inspect with jwt.io</a>
+`;
+}
+
+async function getProfile(accessToken: string) {
+  const response = await fetch(`https://${env.AUTH0_DOMAIN}/userinfo`, {
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+    },
+  });
+  if (!response.ok) {
+    throw new Error("cannot get profile");
+  }
+  const data = await response.json();
+  return data;
 }
 
 function b64DecodeUnicode(str: string) {
