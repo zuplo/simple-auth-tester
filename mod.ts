@@ -74,6 +74,7 @@ const callback: RouteHandler = async (request) => {
 
   const idToken: string | undefined = data.id_token;
   const accessToken: string | undefined = data.access_token;
+  const refreshToken: string | undefined = data.refresh_token;
 
   let html = `
     <h1>Authentication Result</h1>
@@ -97,6 +98,10 @@ const callback: RouteHandler = async (request) => {
 
   if (accessToken && !accessToken.includes("..")) {
     html += getTokenHtml("Access Token", accessToken);
+  }
+
+  if (refreshToken) {
+    html += getRefreshHtml(refreshToken);
   }
 
   return sendResponse(html, 200);
@@ -125,6 +130,22 @@ function getTokenHtml(tokenName: string, token: string) {
 <pre>${JSON.stringify(payload, null, 2)}</pre>
 <a href="${jwtUrl}" target="_blank">Inspect with jwt.io</a>
 `;
+}
+
+function getRefreshHtml(refreshToken: string) {
+  return `
+  <hr />
+  <h2>Refresh Token Request</h2>
+  <pre>
+  curl --request POST \\
+    --url 'https://${env.AUTH0_DOMAIN}/oauth/token' \\
+    --header 'content-type: application/x-www-form-urlencoded' \\
+    --data grant_type=refresh_token \\
+    --data 'client_id=${env.AUTH0_CLIENT_ID}' \\
+    --data 'client_secret=${env.AUTH0_CLIENT_SECRET}' \\
+    --data 'refresh_token=${refreshToken}'
+  </pre>
+  `;
 }
 
 async function getProfile(accessToken: string) {
