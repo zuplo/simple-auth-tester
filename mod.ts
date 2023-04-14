@@ -1,6 +1,7 @@
 // Start listening on port 8080 of localhost.
 import { serve } from "https://deno.land/std@0.158.0/http/server.ts";
 import { config } from "https://deno.land/std@0.158.0/dotenv/mod.ts";
+import * as jose from "https://deno.land/x/jose@v4.13.1/index.ts";
 import {
   RouteHandler,
   Router,
@@ -13,13 +14,26 @@ interface Env {
   AUTH0_SCOPE: string;
   AUDIENCE: string;
   BASE_URL: string;
+  SHARED_SECRET: string;
 }
 
 const env = (await config()) as unknown as Env;
 
 const port = 8080;
 
+const home: RouteHandler = (request) => {
+  let html = `
+  <h1>Home</h1>
+  <a href="${env.BASE_URL}/login">Login</a> | 
+  <a href="${env.BASE_URL}/login?employee">Employee Login</a>
+`;
+
+  return sendResponse(html, 200);
+};
+
 const authorize: RouteHandler = (request) => {
+  const url = new URL(request.url);
+
   const authUrl = new URL(`https://${env.AUTH0_DOMAIN}/authorize`);
   authUrl.searchParams.set("response_type", "code");
   authUrl.searchParams.set("redirect_uri", `${env.BASE_URL}/callback`);
@@ -28,13 +42,17 @@ const authorize: RouteHandler = (request) => {
   if (env.AUDIENCE) {
     authUrl.searchParams.set("audience", env.AUDIENCE);
   }
+  if (url.searchParams.has("employee")) {
+    authUrl.searchParams.set("connection", "google-oauth2");
+    authUrl.searchParams.set("scope", env.AUTH0_SCOPE + " acts_as");
+  }
 
   return Response.redirect(authUrl);
 };
 
 const logout: RouteHandler = (request) => {
   return Response.redirect(
-    `https://${env.AUTH0_DOMAIN}/v2/logout?federated&returnTo=${encodeURI(
+    `https://${env.AUTH0_DOMAIN}/v2/logout?returnTo=${encodeURIComponent(
       env.BASE_URL
     )}`
   );
@@ -44,6 +62,14 @@ const callback: RouteHandler = async (request) => {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   if (!code) {
+    if (url.searchParams.has("error_description")) {
+      const html = `
+          <h1>Error Response</h1>
+          <a href="/">Home</a>
+          <pre>${url.searchParams.get("error_description")}</pre>
+      `;
+      return sendResponse(html, 401);
+    }
     return new Response("Code not set", { status: 500 });
   }
 
@@ -107,10 +133,69 @@ const callback: RouteHandler = async (request) => {
   return sendResponse(html, 200);
 };
 
+const impersonate: RouteHandler = (request) => {
+  const url = new URL(request.url);
+  const state = url.searchParams.get("state");
+  if (!state) {
+    throw new Error("Invalid state");
+  }
+  const session_token = url.searchParams.get("session_token");
+  if (!session_token) {
+    throw new Error("No session_token on query");
+  }
+
+  let html = `
+    <h1>Auth Redirect</h1>
+    <form action="/continue" method="POST">
+      <input type="hidden" name="state" value="${state}" />
+      <input type="hidden" name="session_token" value="${session_token}" />
+      <label for="email">Email:</label><br>
+      <input type="text" name="email" /></br>
+      <input type="submit" value="Submit" />
+    </form>
+  `;
+
+  return sendResponse(html, 200);
+};
+
+const impersonateContinue: RouteHandler = async (request) => {
+  const form = await request.formData();
+  const state = form.get("state") as string | null;
+  if (!state) {
+    throw new Error("Invalid state");
+  }
+  const session_token = form.get("session_token") as string | null;
+  if (!session_token) {
+    throw new Error("Invalid session_token");
+  }
+
+  const secret = new TextEncoder().encode(env.SHARED_SECRET);
+  const alg = "HS256";
+
+  const { payload } = await jose.jwtVerify(session_token, secret);
+
+  const jwt = await new jose.SignJWT({ acts_as: "auth|1235", state })
+    .setProtectedHeader({ alg, typ: "JWT" })
+    .setIssuedAt()
+    .setSubject(payload.sub!)
+    .setIssuer(`https://${env.AUTH0_DOMAIN}/`)
+    .setExpirationTime("5m")
+    .sign(secret);
+
+  const redirect = new URL(`https://${env.AUTH0_DOMAIN}/continue`);
+  redirect.searchParams.set("state", state.toString());
+  redirect.searchParams.set("session_token", jwt);
+
+  return Response.redirect(redirect);
+};
+
 const router = new Router();
-router.get("/", authorize);
+router.get("/", home);
+router.get("/login", authorize);
 router.get("/logout", logout);
 router.get("/callback", callback);
+router.get("/impersonate", impersonate);
+router.post("/continue", impersonateContinue);
 router.all("*", () => new Response("Not found", { status: 404 }));
 
 serve((request) => router.handler(request), { port });
@@ -205,7 +290,7 @@ function sendResponse(body: string, status: number) {
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    <script src="https://cdn.tailwindcss.com?plugins=typography,forms"></script>
   </head>
   <body>
     <div class="my-10">
